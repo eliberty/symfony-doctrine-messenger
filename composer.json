@@ -1,5 +1,5 @@
 {
-    "name": "symfony/doctrine-messenger",
+    "name": "eliberty/symfony-doctrine-messenger",
     "type": "symfony-bridge",
     "description": "Symfony Doctrine Messenger Bridge",
     "keywords": [],

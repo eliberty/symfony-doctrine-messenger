@@ -13,9 +13,12 @@ namespace Symfony\Component\Messenger\Bridge\Doctrine\Transport;
 
 use Doctrine\DBAL\Connection as DBALConnection;
 use Doctrine\DBAL\DBALException;
-use Doctrine\DBAL\Driver\Result;
+use Doctrine\DBAL\Driver\Result as DriverResult;
+use Doctrine\DBAL\Exception;
 use Doctrine\DBAL\Exception\TableNotFoundException;
+use Doctrine\DBAL\LockMode;
 use Doctrine\DBAL\Query\QueryBuilder;
+use Doctrine\DBAL\Result;
 use Doctrine\DBAL\Schema\Comparator;
 use Doctrine\DBAL\Schema\Schema;
 use Doctrine\DBAL\Schema\Synchronizer\SchemaSynchronizer;
@@ -114,6 +117,7 @@ class Connection implements ResetInterface
      * @return string The inserted id
      *
      * @throws \Doctrine\DBAL\DBALException
+     * @throws \Doctrine\DBAL\Exception
      */
     public function send(string $body, array $headers, int $delay = 0): string
     {
@@ -156,13 +160,27 @@ class Connection implements ResetInterface
                 ->orderBy('available_at', 'ASC')
                 ->setMaxResults(1);
 
+            // Append pessimistic write lock to FROM clause if db platform supports it
+            $sql = $query->getSQL();
+            if (($fromPart = $query->getQueryPart('from')) &&
+                ($table = $fromPart[0]['table'] ?? null) &&
+                ($alias = $fromPart[0]['alias'] ?? null)
+            ) {
+                $fromClause = sprintf('%s %s', $table, $alias);
+                $sql = str_replace(
+                    sprintf('FROM %s WHERE', $fromClause),
+                    sprintf('FROM %s WHERE', $this->driverConnection->getDatabasePlatform()->appendLockHint($fromClause, LockMode::PESSIMISTIC_WRITE)),
+                    $sql
+                );
+            }
+
             // use SELECT ... FOR UPDATE to lock table
             $stmt = $this->executeQuery(
-                $query->getSQL().' '.$this->driverConnection->getDatabasePlatform()->getWriteLockSQL(),
+                $sql.' '.$this->driverConnection->getDatabasePlatform()->getWriteLockSQL(),
                 $query->getParameters(),
                 $query->getParameterTypes()
             );
-            $doctrineEnvelope = $stmt instanceof Result ? $stmt->fetchAssociative() : $stmt->fetch();
+            $doctrineEnvelope = $stmt instanceof Result || $stmt instanceof DriverResult ? $stmt->fetchAssociative() : $stmt->fetch();
 
             if (false === $doctrineEnvelope) {
                 $this->driverConnection->commit();
@@ -207,7 +225,7 @@ class Connection implements ResetInterface
     {
         try {
             return $this->driverConnection->delete($this->configuration['table_name'], ['id' => $id]) > 0;
-        } catch (DBALException $exception) {
+        } catch (DBALException | Exception $exception) {
             throw new TransportException($exception->getMessage(), 0, $exception);
         }
     }
@@ -216,7 +234,7 @@ class Connection implements ResetInterface
     {
         try {
             return $this->driverConnection->delete($this->configuration['table_name'], ['id' => $id]) > 0;
-        } catch (DBALException $exception) {
+        } catch (DBALException | Exception $exception) {
             throw new TransportException($exception->getMessage(), 0, $exception);
         }
     }
@@ -239,7 +257,7 @@ class Connection implements ResetInterface
 
         $stmt = $this->executeQuery($queryBuilder->getSQL(), $queryBuilder->getParameters(), $queryBuilder->getParameterTypes());
 
-        return $stmt instanceof Result ? $stmt->fetchOne() : $stmt->fetchColumn();
+        return $stmt instanceof Result || $stmt instanceof DriverResult ? $stmt->fetchOne() : $stmt->fetchColumn();
     }
 
     public function findAll(int $limit = null): array
@@ -250,7 +268,7 @@ class Connection implements ResetInterface
         }
 
         $stmt = $this->executeQuery($queryBuilder->getSQL(), $queryBuilder->getParameters(), $queryBuilder->getParameterTypes());
-        $data = $stmt instanceof Result ? $stmt->fetchAllAssociative() : $stmt->fetchAll();
+        $data = $stmt instanceof Result || $stmt instanceof DriverResult ? $stmt->fetchAllAssociative() : $stmt->fetchAll();
 
         return array_map(function ($doctrineEnvelope) {
             return $this->decodeEnvelopeHeaders($doctrineEnvelope);
@@ -263,7 +281,7 @@ class Connection implements ResetInterface
             ->where('m.id = ?');
 
         $stmt = $this->executeQuery($queryBuilder->getSQL(), [$id]);
-        $data = $stmt instanceof Result ? $stmt->fetchAssociative() : $stmt->fetch();
+        $data = $stmt instanceof Result || $stmt instanceof DriverResult ? $stmt->fetchAssociative() : $stmt->fetch();
 
         return false === $data ? null : $this->decodeEnvelopeHeaders($data);
     }
@@ -338,7 +356,7 @@ class Connection implements ResetInterface
         return $stmt;
     }
 
-    private function executeStatement(string $sql, array $parameters = [], array $types = [])
+    protected function executeStatement(string $sql, array $parameters = [], array $types = [])
     {
         try {
             if (method_exists($this->driverConnection, 'executeStatement')) {
@@ -386,7 +404,7 @@ class Connection implements ResetInterface
         $table->addColumn('headers', Types::TEXT)
             ->setNotnull(true);
         $table->addColumn('queue_name', Types::STRING)
-            ->setLength(190) // mysql 5.6 only supports 191 characters on an indexed column in utf8mb4 mode
+            ->setLength(190) // MySQL 5.6 only supports 191 characters on an indexed column in utf8mb4 mode
             ->setNotnull(true);
         $table->addColumn('created_at', Types::DATETIME_MUTABLE)
             ->setNotnull(true);

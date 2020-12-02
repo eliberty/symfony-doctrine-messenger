@@ -11,9 +11,9 @@
 
 namespace Symfony\Component\Messenger\Bridge\Doctrine\Tests\Transport;
 
-use Doctrine\DBAL\Driver\Result;
+use Doctrine\DBAL\Driver\Result as DriverResult;
 use Doctrine\DBAL\DriverManager;
-use Doctrine\DBAL\Version;
+use Doctrine\DBAL\Result;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Messenger\Bridge\Doctrine\Tests\Fixtures\DummyMessage;
 use Symfony\Component\Messenger\Bridge\Doctrine\Transport\Connection;
@@ -30,13 +30,6 @@ class DoctrineIntegrationTest extends TestCase
     /** @var string */
     private $sqliteFile;
 
-    public static function setUpBeforeClass(): void
-    {
-        if (\PHP_VERSION_ID >= 80000 && class_exists(Version::class)) {
-            self::markTestSkipped('Doctrine DBAL 2.x is incompatible with PHP 8.');
-        }
-    }
-
     protected function setUp(): void
     {
         $this->sqliteFile = sys_get_temp_dir().'/symfony.messenger.sqlite';
@@ -49,7 +42,7 @@ class DoctrineIntegrationTest extends TestCase
     {
         $this->driverConnection->close();
         if (file_exists($this->sqliteFile)) {
-            unlink($this->sqliteFile);
+            @unlink($this->sqliteFile);
         }
     }
 
@@ -69,10 +62,10 @@ class DoctrineIntegrationTest extends TestCase
             ->select('m.available_at')
             ->from('messenger_messages', 'm')
             ->where('m.body = :body')
-            ->setParameter(':body', '{"message": "Hi i am delayed"}')
+            ->setParameter('body', '{"message": "Hi i am delayed"}')
             ->execute();
 
-        $available_at = new \DateTime($stmt instanceof Result ? $stmt->fetchOne() : $stmt->fetchColumn());
+        $available_at = new \DateTime($stmt instanceof Result || $stmt instanceof DriverResult ? $stmt->fetchOne() : $stmt->fetchColumn());
 
         $now = new \DateTime();
         $now->modify('+60 seconds');
